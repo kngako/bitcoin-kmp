@@ -9,12 +9,19 @@ import kotlin.jvm.JvmStatic
  * ChillDKG participant state after the first step of a DKG session (see [ChillDKG.participantStep1]).
  * This should be treated as a private opaque blob: it must be kept until [ChillDKG.participantStep2] and must not
  * be reused afterwards.
+ *
+ * The session parameters ([nParticipants] and [threshold]) are carried alongside the opaque blob: the underlying
+ * C API does not take the length of the messages it parses and derives their expected length from the session
+ * state, so we validate message sizes ourselves before calling it (a truncated message would otherwise be read
+ * out of bounds).
  */
-public data class ParticipantState1(private val data: ByteVector) {
-    public constructor(data: ByteArray) : this(data.byteVector())
+public data class ParticipantState1(private val data: ByteVector, val nParticipants: Int, val threshold: Int) {
+    public constructor(data: ByteArray, nParticipants: Int, threshold: Int) : this(data.byteVector(), nParticipants, threshold)
 
     init {
         require(data.size() == Secp256k1.CHILLDKG_PARTICIPANT_STATE1_SIZE) { "chilldkg participant state1 must be ${Secp256k1.CHILLDKG_PARTICIPANT_STATE1_SIZE} bytes" }
+        require(nParticipants in 1..Secp256k1.CHILLDKG_MAX_PARTICIPANTS) { "invalid number of participants" }
+        require(threshold in 1..nParticipants) { "invalid threshold" }
     }
 
     public fun toByteArray(): ByteArray = data.toByteArray()
@@ -26,12 +33,17 @@ public data class ParticipantState1(private val data: ByteVector) {
  * ChillDKG participant state after the second step of a DKG session (see [ChillDKG.participantStep2]).
  * This should be treated as a private opaque blob: it must be kept until [ChillDKG.participantFinalize] and must
  * not be reused afterwards.
+ *
+ * The session parameters ([nParticipants] and [threshold]) are carried alongside the opaque blob (see
+ * [ParticipantState1] for why).
  */
-public data class ParticipantState2(private val data: ByteVector) {
-    public constructor(data: ByteArray) : this(data.byteVector())
+public data class ParticipantState2(private val data: ByteVector, val nParticipants: Int, val threshold: Int) {
+    public constructor(data: ByteArray, nParticipants: Int, threshold: Int) : this(data.byteVector(), nParticipants, threshold)
 
     init {
         require(data.size() == Secp256k1.CHILLDKG_PARTICIPANT_STATE2_SIZE) { "chilldkg participant state2 must be ${Secp256k1.CHILLDKG_PARTICIPANT_STATE2_SIZE} bytes" }
+        require(nParticipants in 1..Secp256k1.CHILLDKG_MAX_PARTICIPANTS) { "invalid number of participants" }
+        require(threshold in 1..nParticipants) { "invalid threshold" }
     }
 
     public fun toByteArray(): ByteArray = data.toByteArray()
@@ -43,12 +55,17 @@ public data class ParticipantState2(private val data: ByteVector) {
  * ChillDKG coordinator state (see [ChillDKG.coordinatorStep1]).
  * This should be treated as a private opaque blob: it must be kept until [ChillDKG.coordinatorFinalize] and must
  * not be reused afterwards.
+ *
+ * The session parameters ([nParticipants] and [threshold]) are carried alongside the opaque blob (see
+ * [ParticipantState1] for why).
  */
-public data class CoordinatorState(private val data: ByteVector) {
-    public constructor(data: ByteArray) : this(data.byteVector())
+public data class CoordinatorState(private val data: ByteVector, val nParticipants: Int, val threshold: Int) {
+    public constructor(data: ByteArray, nParticipants: Int, threshold: Int) : this(data.byteVector(), nParticipants, threshold)
 
     init {
         require(data.size() == Secp256k1.CHILLDKG_COORDINATOR_STATE_SIZE) { "chilldkg coordinator state must be ${Secp256k1.CHILLDKG_COORDINATOR_STATE_SIZE} bytes" }
+        require(nParticipants in 1..Secp256k1.CHILLDKG_MAX_PARTICIPANTS) { "invalid number of participants" }
+        require(threshold in 1..nParticipants) { "invalid threshold" }
     }
 
     public fun toByteArray(): ByteArray = data.toByteArray()
@@ -60,12 +77,15 @@ public data class CoordinatorState(private val data: ByteVector) {
  * ChillDKG investigation data (see [ChillDKG.participantStep2]), allowing a participant to investigate who is to
  * blame for a failed DKG session (see [ChillDKG.participantInvestigate]).
  * This should be treated as a private opaque blob: it must not be shared.
+ *
+ * The number of participants is carried alongside the opaque blob (see [ParticipantState1] for why).
  */
-public data class InvestigationData(private val data: ByteVector) {
-    public constructor(data: ByteArray) : this(data.byteVector())
+public data class InvestigationData(private val data: ByteVector, val nParticipants: Int) {
+    public constructor(data: ByteArray, nParticipants: Int) : this(data.byteVector(), nParticipants)
 
     init {
         require(data.size() == Secp256k1.CHILLDKG_PARTICIPANT_INVESTIGATION_DATA_SIZE) { "chilldkg investigation data must be ${Secp256k1.CHILLDKG_PARTICIPANT_INVESTIGATION_DATA_SIZE} bytes" }
+        require(nParticipants in 1..Secp256k1.CHILLDKG_MAX_PARTICIPANTS) { "invalid number of participants" }
     }
 
     public fun toByteArray(): ByteArray = data.toByteArray()
@@ -207,7 +227,7 @@ public object ChillDKG {
     @JvmStatic
     public fun participantStep1(hostSecretKey: PrivateKey, hostPublicKeys: List<PublicKey>, threshold: Int, random: ByteVector32): ParticipantStep1Result {
         val (state, pmsg1) = Secp256k1.chilldkgParticipantStep1(hostSecretKey.value.toByteArray(), hostPublicKeys.map { it.value.toByteArray() }.toTypedArray(), threshold, random.toByteArray())
-        return ParticipantStep1Result(ParticipantState1(state), pmsg1.byteVector())
+        return ParticipantStep1Result(ParticipantState1(state, hostPublicKeys.size, threshold), pmsg1.byteVector())
     }
 
     /**
@@ -223,8 +243,10 @@ public object ChillDKG {
      */
     @JvmStatic
     public fun coordinatorStep1(participantMessages: List<ByteVector>, hostPublicKeys: List<PublicKey>, threshold: Int): CoordinatorStep1Result {
+        // The C API parses messages without knowing their length: we must validate their sizes ourselves.
+        participantMessages.forEach { require(it.size() == expectedParticipantMessage1Size(hostPublicKeys.size, threshold)) { "invalid participant message size" } }
         val result = Secp256k1.chilldkgCoordinatorStep1(participantMessages.map { it.toByteArray() }.toTypedArray(), hostPublicKeys.map { it.value.toByteArray() }.toTypedArray(), threshold)
-        return CoordinatorStep1Result(result.fault, CoordinatorState(result.state), result.cmsg1.byteVector())
+        return CoordinatorStep1Result(result.fault, CoordinatorState(result.state, hostPublicKeys.size, threshold), result.cmsg1.byteVector())
     }
 
     /**
@@ -244,8 +266,10 @@ public object ChillDKG {
      */
     @JvmStatic
     public fun participantStep2(hostSecretKey: PrivateKey, state: ParticipantState1, coordinatorMessage: ByteVector, auxRand: ByteVector32): ParticipantStep2Result {
+        // The C API parses the message without knowing its length: we must validate its size ourselves.
+        require(coordinatorMessage.size() == expectedCoordinatorMessage1Size(state.nParticipants, state.threshold)) { "invalid coordinator message size" }
         val result = Secp256k1.chilldkgParticipantStep2(hostSecretKey.value.toByteArray(), state.toByteArray(), coordinatorMessage.toByteArray(), auxRand.toByteArray())
-        return ParticipantStep2Result(result.fault, ParticipantState2(result.state2), result.sig64.byteVector64(), result.investigationData?.let { InvestigationData(it) })
+        return ParticipantStep2Result(result.fault, ParticipantState2(result.state2, state.nParticipants, state.threshold), result.sig64.byteVector64(), result.investigationData?.let { InvestigationData(it, state.nParticipants) })
     }
 
     /**
@@ -260,6 +284,10 @@ public object ChillDKG {
      */
     @JvmStatic
     public fun coordinatorFinalize(state: CoordinatorState, certEqSignatures: List<ByteVector64>, threshold: Int): CoordinatorFinalizeResult {
+        // The C API uses the session's participant count (stored in the state) to size its output buffers: we must
+        // validate the signatures count ourselves.
+        require(certEqSignatures.size == state.nParticipants) { "invalid number of CertEq signatures" }
+        require(threshold == state.threshold) { "threshold doesn't match the session's" }
         val result = Secp256k1.chilldkgCoordinatorFinalize(state.toByteArray(), certEqSignatures.map { it.toByteArray() }.toTypedArray(), threshold)
         return CoordinatorFinalizeResult(
             result.fault,
@@ -281,6 +309,8 @@ public object ChillDKG {
      */
     @JvmStatic
     public fun participantFinalize(state: ParticipantState2, certificate: ByteVector, nParticipants: Int, threshold: Int): ParticipantFinalizeResult {
+        require(nParticipants == state.nParticipants) { "participants count doesn't match the session's" }
+        require(threshold == state.threshold) { "threshold doesn't match the session's" }
         val result = Secp256k1.chilldkgParticipantFinalize(state.toByteArray(), certificate.toByteArray(), nParticipants, threshold)
         return ParticipantFinalizeResult(
             result.fault,
@@ -363,6 +393,8 @@ public object ChillDKG {
      */
     @JvmStatic
     public fun coordinatorInvestigate(participantMessages: List<ByteVector>, hostPublicKeys: List<PublicKey>, threshold: Int, participantId: UInt): Pair<ChilldkgFault, ByteVector> {
+        // The C API parses messages without knowing their length: we must validate their sizes ourselves.
+        participantMessages.forEach { require(it.size() == expectedParticipantMessage1Size(hostPublicKeys.size, threshold)) { "invalid participant message size" } }
         val (fault, cinv) = Secp256k1.chilldkgCoordinatorInvestigate(participantMessages.map { it.toByteArray() }.toTypedArray(), hostPublicKeys.map { it.value.toByteArray() }.toTypedArray(), threshold, participantId)
         return Pair(fault, cinv.byteVector())
     }
@@ -378,6 +410,8 @@ public object ChillDKG {
      */
     @JvmStatic
     public fun participantInvestigate(investigationData: InvestigationData, coordinatorInvestigationMessage: ByteVector): ChilldkgFault {
+        // The C API parses the message without knowing its length: we must validate its size ourselves.
+        require(coordinatorInvestigationMessage.size() == 65 * investigationData.nParticipants) { "invalid investigation message size" }
         return Secp256k1.chilldkgParticipantInvestigate(investigationData.toByteArray(), coordinatorInvestigationMessage.toByteArray())
     }
 
@@ -397,4 +431,8 @@ public object ChillDKG {
     private fun ByteArray?.toPrivateKeyOrNull(valid: Boolean): PrivateKey? = if (valid && this != null) PrivateKey(this) else null
     private fun ByteArray.toPublicKeyOrNull(valid: Boolean): PublicKey? = if (valid) PublicKey(this) else null
     private fun Array<ByteArray>.toPublicKeys(valid: Boolean): List<PublicKey> = if (valid) this.map { PublicKey(it) } else listOf()
+
+    // Message sizes, matching secp256k1_chilldkg_participant_msg1_len and secp256k1_chilldkg_coordinator_msg1_len.
+    private fun expectedParticipantMessage1Size(nParticipants: Int, threshold: Int): Int = 33 * threshold + 32 * nParticipants + 97
+    private fun expectedCoordinatorMessage1Size(nParticipants: Int, threshold: Int): Int = 162 * nParticipants + 33 * (threshold - 1)
 }
