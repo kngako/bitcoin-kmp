@@ -342,6 +342,33 @@ public object Frost {
     }
 
     /**
+     * Create a frost partial signature with a deterministically derived nonce (BIP 445 DeterministicSign), for a
+     * signer that is online throughout the whole session. The nonce is derived from the secret share, the signer
+     * set, the other signers' aggregate nonce, the tweaked threshold public key, and the message.
+     *
+     * @param secretShare secret share of the signing participant.
+     * @param myId identifier of the signing participant (must be one of [signerIds]).
+     * @param aggregateOtherNonce aggregate of all _other_ signers' public nonces (see [IndividualNonce.aggregate]),
+     * or null for a sole signer.
+     * @param signerIds identifiers of the signing participants.
+     * @param signerPublicShares (optional) public shares of the signing participants (entry i belongs to
+     * signerIds[i]).
+     * @param nParticipants total number of participants n.
+     * @param threshold threshold t: the number of signers required to produce a signature.
+     * @param tweakCache tweak cache holding the threshold public key and all tweaks applied to it.
+     * @param message message that should be signed.
+     * @param auxRand (optional) 32 bytes of auxiliary randomness mixed into the nonce derivation.
+     * @return the signer's partial signature and public nonce (to be sent to the coordinator).
+     */
+    @JvmStatic
+    public fun deterministicSign(secretShare: PrivateKey, myId: UInt, aggregateOtherNonce: AggregatedNonce?, signerIds: List<UInt>, signerPublicShares: List<PublicKey>?, nParticipants: Int, threshold: Int, tweakCache: TweakCache, message: ByteVector, auxRand: ByteVector32?): Either<Throwable, Pair<ByteVector32, IndividualNonce>> = try {
+        val (partialSig, publicNonce) = Secp256k1.frostDeterministicSign(secretShare.value.toByteArray(), myId, aggregateOtherNonce?.toByteArray(), signerIds.toUIntArray(), signerPublicShares?.map { it.value.toByteArray() }?.toTypedArray(), nParticipants, threshold, tweakCache.toByteArray(), message.toByteArray(), auxRand?.toByteArray())
+        Either.Right(Pair(partialSig.byteVector32(), IndividualNonce(publicNonce)))
+    } catch (t: Throwable) {
+        Either.Left(t)
+    }
+
+    /**
      * Create a partial frost signature for the given arbitrary message.
      *
      * @param secretShare secret share of the signing participant.
