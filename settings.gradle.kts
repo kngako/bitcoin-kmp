@@ -14,6 +14,7 @@ pluginManagement {
 includeBuild("experimental/secp256k1-kmp") {
     dependencySubstitution {
         substitute(module("fr.acinq.secp256k1:secp256k1-kmp")).using(project(":"))
+        substitute(module("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm")).using(project(":jni:jvm:all"))
         substitute(module("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-linux")).using(project(":jni:jvm:linux"))
         substitute(module("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-darwin")).using(project(":jni:jvm:darwin"))
         substitute(module("fr.acinq.secp256k1:secp256k1-kmp-jni-jvm-mingw")).using(project(":jni:jvm:mingw"))
