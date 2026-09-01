@@ -1,3 +1,6 @@
 [submodule "c/secp256k1"]
 	path = c/secp256k1
 	url = https://github.com/bitcoin-core/secp256k1.git
+[submodule "experimental/secp256k1-kmp"]
+	path = experimental/secp256k1-kmp
+	url = https://github.com/kngako/secp256k1-kmp.git
