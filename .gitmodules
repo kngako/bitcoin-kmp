@@ -4,3 +4,4 @@
 [submodule "experimental/secp256k1-kmp"]
 	path = experimental/secp256k1-kmp
 	url = https://github.com/kngako/secp256k1-kmp.git
+	branch = threshold
