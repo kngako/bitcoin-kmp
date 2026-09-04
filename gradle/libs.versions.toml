@@ -1,5 +1,5 @@
 [versions]
-kotlin = "2.3.10"
+kotlin = "2.4.10"
 secp256k1kmp = "0.24.0"
 
 [libraries]
