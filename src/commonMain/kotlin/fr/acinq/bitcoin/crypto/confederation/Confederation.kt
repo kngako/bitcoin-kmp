@@ -5,7 +5,13 @@ package fr.acinq.bitcoin.crypto.confederation
 import fr.acinq.bitcoin.ByteVector
 import fr.acinq.bitcoin.ByteVector32
 import fr.acinq.bitcoin.ByteVector64
+import fr.acinq.bitcoin.Crypto
 import fr.acinq.bitcoin.PrivateKey
+import fr.acinq.bitcoin.ScriptTree
+import fr.acinq.bitcoin.SigHash
+import fr.acinq.bitcoin.Transaction
+import fr.acinq.bitcoin.TxOut
+import fr.acinq.bitcoin.XonlyPublicKey
 import fr.acinq.bitcoin.utils.Either
 import fr.acinq.secp256k1.Secp256k1
 import kotlin.jvm.JvmStatic
@@ -84,6 +90,13 @@ public data class ConfederationTweak(val tweak: ByteVector32, val isXonly: Boole
     public companion object {
         /** At most this many tweaks fit a session (CONFEDERATION_TWEAK_SEQUENCE_MAX_SIZE = 4 + 64 * 33). */
         public const val MAX_COUNT: Int = 64
+
+        /**
+         * The BIP 341 tweak of [internalKey]: signing under a confederation key with this tweak produces a signature
+         * under the P2TR output key `internalKey.outputKey(tapTweak)`.
+         */
+        @JvmStatic
+        public fun taproot(internalKey: XonlyPublicKey, tapTweak: Crypto.TaprootTweak): ConfederationTweak = ConfederationTweak(internalKey.tweak(tapTweak), isXonly = true)
 
         /** `u32 count` followed by `scalar32 tweak || u8 is_xonly` per tweak. Four zero bytes for none. */
         internal fun encode(tweaks: List<ConfederationTweak>): ByteArray {
@@ -246,6 +259,30 @@ public object Confederation {
         } finally {
             hosts.forEach { it.fill(0) }
         }
+    }
+
+    /**
+     * Sign the key path of taproot input [inputIndex] of [tx], whose output uses [keyState]'s key as internal key with
+     * [scriptTree] (or no script path when null), with SIGHASH_DEFAULT. The signature goes in the witness as is, with
+     * [fr.acinq.bitcoin.Script.witnessKeyPathPay2tr]. Same single-process caveats as [signLocal].
+     *
+     * @param inputs the outputs spent by every input of [tx], in order.
+     */
+    @JvmStatic
+    public fun signTaprootInputLocal(
+        keyState: ConfederationKeyState,
+        shares: Map<ConfederationRoleId, ConfederationShare>,
+        hostSecretKeys: Map<ConfederationRoleId, PrivateKey>,
+        selection: ConfederationSignerSelection,
+        tx: Transaction,
+        inputIndex: Int,
+        inputs: List<TxOut>,
+        scriptTree: ScriptTree?,
+        signingSessionId: ByteVector32,
+    ): Either<Throwable, ByteVector64> {
+        val tapTweak = scriptTree?.let { Crypto.TaprootTweak.ScriptPathTweak(it.hash()) } ?: Crypto.TaprootTweak.KeyPathTweak
+        val txHash = Transaction.hashForSigningTaprootKeyPath(tx, inputIndex, inputs, SigHash.SIGHASH_DEFAULT)
+        return signLocal(keyState, shares, hostSecretKeys, selection, listOf(ConfederationTweak.taproot(keyState.publicKey, tapTweak)), signingSessionId, txHash)
     }
 
     /** Wrap [role]'s 32-byte secret share, after checking it against the role's public share in [keyState]. */
