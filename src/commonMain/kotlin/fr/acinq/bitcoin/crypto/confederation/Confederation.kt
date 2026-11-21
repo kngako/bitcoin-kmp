@@ -162,8 +162,8 @@ public class ConfederationDkgOutput(
  * WARNING: the underlying secp256k1-zkp confederation module is experimental research code. It is not audited or
  * stable and must not be used in production or to protect value. In particular:
  * - [dkgLocal] and [signLocal] run EVERY role in one process, holding every host secret key and share. They are a
- *   simulation and test harness, not a distributed protocol: the round-by-round steps, and enrollment, refresh,
- *   masking and resharing, are not public at the pinned native revision.
+ *   simulation and test harness, not a distributed protocol. [ConfederationDkg] runs the DKG one role per device;
+ *   enrollment, refresh, masking and resharing are not public at the pinned native revision.
  * - A transition certificate proves authorization, not consensus: see [ConfederationTransition].
  * - Unique host keys do not establish independent people or entities; [ConfederationRoster.access] is only as good
  *   as the roster's entity attestation.
@@ -229,7 +229,8 @@ public object Confederation {
      * [keyState]'s key tweaked by [tweaks] in order.
      *
      * The native module takes a share and host secret key for EVERY role of the roster, signers or not. Use a fresh
-     * [signingSessionId] for every attempt, including a retry of a failed one.
+     * [signingSessionId] for every attempt, including a retry of a failed one. [nonceRandomness] holds one fresh
+     * secret per selected signer, never derived from public data such as the session id.
      */
     @JvmStatic
     public fun signLocal(
@@ -240,24 +241,29 @@ public object Confederation {
         tweaks: List<ConfederationTweak>,
         signingSessionId: ByteVector32,
         message: ByteVector32,
+        nonceRandomness: Map<ConfederationRoleId, ByteVector32>,
     ): Either<Throwable, ByteVector64> {
         val roster = keyState.roster
         val orderedShares = keyedByRole(roster, shares, "a share")
         roster.roleIds.zip(orderedShares).forEach { (id, share) -> require(share.role == id) { "the share given for $id belongs to ${share.role}" } }
         val hosts = hostKeys(roster, hostSecretKeys)
         val (groupIds, innerCounts, adminIds) = selection.encode(roster)
+        val signers = selection.signers
+        require(nonceRandomness.keys == signers.toSet()) { "expected nonce randomness for exactly the signers $signers, got ${nonceRandomness.keys.sorted()}" }
+        val secrands = signers.map { nonceRandomness.getValue(it).toByteArray() }.toTypedArray()
         val tweakSequence = ConfederationTweak.encode(tweaks)
         return try {
             val sig = Secp256k1.confederationSign(
                 roster.native, keyState.native,
                 orderedShares.map { it.native }.toTypedArray(), hosts,
-                signingSessionId.toByteArray(), groupIds, innerCounts, adminIds, tweakSequence, message.toByteArray(),
+                signingSessionId.toByteArray(), groupIds, innerCounts, adminIds, tweakSequence, message.toByteArray(), secrands,
             )
             Either.Right(ByteVector64(sig))
         } catch (t: Throwable) {
             Either.Left(t)
         } finally {
             hosts.forEach { it.fill(0) }
+            secrands.forEach { it.fill(0) }
         }
     }
 
@@ -279,10 +285,11 @@ public object Confederation {
         inputs: List<TxOut>,
         scriptTree: ScriptTree?,
         signingSessionId: ByteVector32,
+        nonceRandomness: Map<ConfederationRoleId, ByteVector32>,
     ): Either<Throwable, ByteVector64> {
         val tapTweak = scriptTree?.let { Crypto.TaprootTweak.ScriptPathTweak(it.hash()) } ?: Crypto.TaprootTweak.KeyPathTweak
         val txHash = Transaction.hashForSigningTaprootKeyPath(tx, inputIndex, inputs, SigHash.SIGHASH_DEFAULT)
-        return signLocal(keyState, shares, hostSecretKeys, selection, listOf(ConfederationTweak.taproot(keyState.publicKey, tapTweak)), signingSessionId, txHash)
+        return signLocal(keyState, shares, hostSecretKeys, selection, listOf(ConfederationTweak.taproot(keyState.publicKey, tapTweak)), signingSessionId, txHash, nonceRandomness)
     }
 
     /** Wrap [role]'s 32-byte secret share, after checking it against the role's public share in [keyState]. */

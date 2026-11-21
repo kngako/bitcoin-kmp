@@ -18,7 +18,7 @@ import kotlin.test.*
  * Confederation through the bitcoin-kmp wrapper.
  *
  * The bytes are pinned by secp256k1-kmp's own binding tests and vectors; vectors.json is copied from secp256k1-kmp
- * fce4d81 (zkp confederation e18a8e8e). What is exercised here is what this layer adds: the roster read from its
+ * 8022069 (zkp confederation b5819301). What is exercised here is what this layer adds: the roster read from its
  * canonical encoding, per-role inputs keyed by role and ordered by the wrapper, the caller's errors raised as
  * [IllegalArgumentException] rather than returned, canonical signer selection and tweak encoding, typed transitions
  * and recovery packages, and secrets kept out of [toString].
@@ -51,6 +51,10 @@ class ConfederationTestsCommon {
     private fun id(group: Int, admin: Int) = ConfederationRoleId(group.toUInt(), admin.toUInt())
 
     private fun session(tag: Int) = ByteVector32(ByteArray(32).also { it[0] = tag.toByte() })
+
+    /** Deterministic nonce randomness for [selection]'s signers, distinct per [tag]. Real callers draw it fresh. */
+    private fun nonces(selection: ConfederationSignerSelection, tag: Int): Map<ConfederationRoleId, ByteVector32> =
+        selection.signers.associateWith { r -> ByteVector32(ByteArray(32).also { it[0] = 0x4d; it[1] = tag.toByte(); it[30] = r.groupId.toByte(); it[31] = r.adminId.toByte() }) }
 
     /** Groups 0 and 1, admins 0 and 1 of each: the smallest authorized coalition of the vectors' 2-of-(2-of-3) roster. */
     private val twoByTwo = ConfederationSignerSelection(mapOf(0u to setOf(0u, 1u), 1u to setOf(0u, 1u)))
@@ -172,16 +176,21 @@ class ConfederationTestsCommon {
 
         val out = dkg()
         val message = session(0xb2)
-        assertFailsWith<IllegalArgumentException> { Confederation.signLocal(out.keyState, out.shares - id(1, 2), hostSecrets, twoByTwo, emptyList(), session(0xb3), message) }
+        assertFailsWith<IllegalArgumentException> { Confederation.signLocal(out.keyState, out.shares - id(1, 2), hostSecrets, twoByTwo, emptyList(), session(0xb3), message, nonces(twoByTwo, 0xb3)) }
         val misplaced = out.shares + (id(0, 0) to out.shares.getValue(id(0, 1)))
-        assertFailsWith<IllegalArgumentException> { Confederation.signLocal(out.keyState, misplaced, hostSecrets, twoByTwo, emptyList(), session(0xb3), message) }
+        assertFailsWith<IllegalArgumentException> { Confederation.signLocal(out.keyState, misplaced, hostSecrets, twoByTwo, emptyList(), session(0xb3), message, nonces(twoByTwo, 0xb3)) }
+        // Nonce randomness for exactly the selected signers: none missing, none extra.
+        val oneShort = nonces(twoByTwo, 0xb3) - id(1, 1)
+        assertFailsWith<IllegalArgumentException> { Confederation.signLocal(out.keyState, out.shares, hostSecrets, twoByTwo, emptyList(), session(0xb3), message, oneShort) }
+        val oneExtra = nonces(twoByTwo, 0xb3) + (id(2, 0) to session(0xb5))
+        assertFailsWith<IllegalArgumentException> { Confederation.signLocal(out.keyState, out.shares, hostSecrets, twoByTwo, emptyList(), session(0xb3), message, oneExtra) }
     }
 
     @Test
     fun `signing verifies under the key state's key whatever the input order`() {
         val out = dkg()
         val message = session(0xb2)
-        val sig = Confederation.signLocal(out.keyState, out.shares, hostSecrets, twoByTwo, emptyList(), session(0xb1), message).right!!
+        val sig = Confederation.signLocal(out.keyState, out.shares, hostSecrets, twoByTwo, emptyList(), session(0xb1), message, nonces(twoByTwo, 0xb1)).right!!
         assertTrue(Crypto.verifySignatureSchnorr(message, sig, out.keyState.publicKey))
         // Reversed maps and a selection listed backwards encode to the same native call.
         val reversed = Confederation.signLocal(
@@ -192,6 +201,7 @@ class ConfederationTestsCommon {
             emptyList(),
             session(0xb1),
             message,
+            nonces(twoByTwo, 0xb1).entries.reversed().associate { it.toPair() },
         ).right!!
         assertEquals(sig, reversed)
         // Other authorized coalitions sign too.
@@ -199,7 +209,7 @@ class ConfederationTestsCommon {
             mapOf(0u to setOf(0u, 2u), 2u to setOf(1u, 2u)),
             mapOf(0u to setOf(0u, 1u, 2u), 1u to setOf(0u, 2u), 2u to setOf(0u, 1u)),
         ).forEachIndexed { i, groups ->
-            val s = Confederation.signLocal(out.keyState, out.shares, hostSecrets, ConfederationSignerSelection(groups), emptyList(), session(0xc0 + i), message).right!!
+            val s = Confederation.signLocal(out.keyState, out.shares, hostSecrets, ConfederationSignerSelection(groups), emptyList(), session(0xc0 + i), message, nonces(ConfederationSignerSelection(groups), 0xc0 + i)).right!!
             assertTrue(Crypto.verifySignatureSchnorr(message, s, out.keyState.publicKey))
         }
     }
@@ -215,7 +225,7 @@ class ConfederationTestsCommon {
         assertEquals(hex("signing_tweak_sequence"), ConfederationTweak.encode(tweaks).byteVector())
         val message = hex32("message")
         val selection = ConfederationSignerSelection(mapOf(0u to setOf(0u, 1u), 1u to setOf(0u, 2u)))
-        val sig = Confederation.signLocal(keyState, shares, hostSecrets, selection, tweaks, hex32("signing_session_id"), message).right!!
+        val sig = Confederation.signLocal(keyState, shares, hostSecrets, selection, tweaks, hex32("signing_session_id"), message, nonces(selection, 0x5a)).right!!
         assertTrue(Crypto.verifySignatureSchnorr(message, sig, XonlyPublicKey(PublicKey(hex("tweaked_Q")))))
         assertFalse(Crypto.verifySignatureSchnorr(message, sig, keyState.publicKey))
     }
@@ -223,7 +233,7 @@ class ConfederationTestsCommon {
     @Test
     fun `signer selection is checked against the roster`() {
         val out = dkg()
-        fun sign(groups: Map<UInt, Set<UInt>>) = Confederation.signLocal(out.keyState, out.shares, hostSecrets, ConfederationSignerSelection(groups), emptyList(), session(0xb4), session(0xb2))
+        fun sign(groups: Map<UInt, Set<UInt>>) = Confederation.signLocal(out.keyState, out.shares, hostSecrets, ConfederationSignerSelection(groups), emptyList(), session(0xb4), session(0xb2), nonces(ConfederationSignerSelection(groups), 0xb4))
         assertFailsWith<IllegalArgumentException> { sign(mapOf(0u to setOf(0u, 1u))) } // T = 2 groups
         assertFailsWith<IllegalArgumentException> { sign(mapOf(0u to setOf(0u, 1u), 3u to setOf(0u, 1u))) } // no group 3
         assertFailsWith<IllegalArgumentException> { sign(mapOf(0u to setOf(0u, 1u), 1u to setOf(0u))) } // t_1 = 2

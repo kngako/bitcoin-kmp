@@ -32,6 +32,10 @@ class ConfederationTaprootTestsCommon {
 
     private val internalKey: XonlyPublicKey = dkg.keyState.publicKey
 
+    /** Deterministic nonce randomness for [selection]'s signers, distinct per [tag]. Real callers draw it fresh. */
+    private fun nonces(selection: ConfederationSignerSelection, tag: Int): Map<ConfederationRoleId, ByteVector32> =
+        selection.signers.associateWith { r -> ByteVector32(ByteArray(32).also { it[0] = 0x4d; it[1] = tag.toByte(); it[30] = r.groupId.toByte(); it[31] = r.adminId.toByte() }) }
+
     /** Groups 0 and 2: admins 0 and 2 of the first, 1 and 2 of the second. */
     private val selection = ConfederationSignerSelection(mapOf(0u to setOf(0u, 2u), 2u to setOf(1u, 2u)))
 
@@ -46,7 +50,7 @@ class ConfederationTaprootTestsCommon {
 
     private fun signedSpend(funding: Transaction, scriptTree: ScriptTree?, session: Int): Transaction {
         val tx = spend(funding)
-        val sig = Confederation.signTaprootInputLocal(dkg.keyState, dkg.shares, hostSecrets, selection, tx, 0, funding.txOut, scriptTree, seed(0x7a, session)).right!!
+        val sig = Confederation.signTaprootInputLocal(dkg.keyState, dkg.shares, hostSecrets, selection, tx, 0, funding.txOut, scriptTree, seed(0x7a, session), nonces(selection, 0x7a + session)).right!!
         return tx.updateWitness(0, Script.witnessKeyPathPay2tr(sig))
     }
 
@@ -54,7 +58,7 @@ class ConfederationTaprootTestsCommon {
     fun `the taproot tweak signs for the BIP 341 output key`() {
         listOf(Crypto.TaprootTweak.KeyPathTweak, Crypto.TaprootTweak.ScriptPathTweak(ByteVector32(ByteArray(32) { 7 }))).forEachIndexed { i, tapTweak ->
             val message = seed(0x99, i)
-            val sig = Confederation.signLocal(dkg.keyState, dkg.shares, hostSecrets, selection, listOf(ConfederationTweak.taproot(internalKey, tapTweak)), seed(0x7b, i), message).right!!
+            val sig = Confederation.signLocal(dkg.keyState, dkg.shares, hostSecrets, selection, listOf(ConfederationTweak.taproot(internalKey, tapTweak)), seed(0x7b, i), message, nonces(selection, 0x7b + i)).right!!
             assertTrue(Crypto.verifySignatureSchnorr(message, sig, internalKey.outputKey(tapTweak).first))
             assertFalse(Crypto.verifySignatureSchnorr(message, sig, internalKey))
         }
