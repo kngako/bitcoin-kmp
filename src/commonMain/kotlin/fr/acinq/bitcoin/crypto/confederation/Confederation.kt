@@ -162,8 +162,8 @@ public class ConfederationDkgOutput(
  * WARNING: the underlying secp256k1-zkp confederation module is experimental research code. It is not audited or
  * stable and must not be used in production or to protect value. In particular:
  * - [dkgLocal] and [signLocal] run EVERY role in one process, holding every host secret key and share. They are a
- *   simulation and test harness, not a distributed protocol. [ConfederationDkg] runs the DKG one role per device;
- *   enrollment, refresh, masking and resharing are not public at the pinned native revision.
+ *   simulation and test harness, not a distributed protocol. [ConfederationDkg] and [ConfederationSigning] run them
+ *   one role per device; enrollment, refresh, masking and resharing are not public at the pinned native revision.
  * - A transition certificate proves authorization, not consensus: see [ConfederationTransition].
  * - Unique host keys do not establish independent people or entities; [ConfederationRoster.access] is only as good
  *   as the roster's entity attestation.
